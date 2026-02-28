@@ -1,0 +1,11 @@
+# API response cache (can be large / account-specific)
+data/
+
+# Env and local
+.env
+.venv
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
