@@ -75,5 +75,5 @@ def main():
                 update_location_status(location["_id"], location_etag, "SUBSCRIBED")
                 print(f"Updated location {location.get('name')} to SUBSCRIBED")
                 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
