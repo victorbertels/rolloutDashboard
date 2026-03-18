@@ -1,3 +1,9 @@
+"""
+Rollout script — runs the actual updates (separate from dashboard.py).
+
+Updates channel link status and location status based on qualifying orders.
+Run: python main.py
+"""
 from datetime import datetime, timedelta, timezone
 from utils import (
     get_account,
@@ -48,7 +54,7 @@ def main():
 
                 print(f"Channel Link: {channel_link_id}")
                 orders_response = get_orders_per_channel_link(
-                    channel_link_id, account_id, start_date, end_date
+                    channel_link_id, account_id, start_date, end_date, location=location
                 )
                 orders = orders_response.get("_items", [])
                 print(f"Orders: {len(orders)}")
