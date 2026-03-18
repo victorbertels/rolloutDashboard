@@ -117,22 +117,49 @@ days_back = st.sidebar.number_input("Days to look back", min_value=1, value=2, s
 start_date, end_date = make_date_range(int(days_back))
 st.sidebar.caption(f"Period: {start_date[:10]} → {end_date[:19]}")
 
+# Load account + location tags once (cached in session state); refetch when account_id changes
+cache_key = f"tags_{account_id}"
+if cache_key not in st.session_state:
+    try:
+        with st.sidebar:
+            with st.status("Loading tags…", expanded=True):
+                # st.write("account…")
+                account = get_account(account_id)
+                account_name = account.get("name", account_id)
+                st.write("Fetching locs…")
+                all_locations = get_all_locations(account_id)
+                st.write("Fetching channels…")
+                all_channel_links = get_all_channel_links(account_id)
+                st.write("Building tags…")
+                grouped = group_all_locations_by_tags(all_locations, all_channel_links)
+                tags = sorted(grouped.keys())
+                # st.write(f"Ready.")
+                st.session_state[cache_key] = {
+                    "account_name": account_name,
+                    "all_locations": all_locations,
+                    "all_channel_links": all_channel_links,
+                    "grouped": grouped,
+                    "tags": tags,
+                }
+    except Exception as e:
+        st.sidebar.error(str(e))
+        st.stop()
+
+cached = st.session_state[cache_key]
+account_name = cached["account_name"]
+all_locations = cached["all_locations"]
+all_channel_links = cached["all_channel_links"]
+grouped = cached["grouped"]
+tags = cached["tags"]
+st.sidebar.success(f"Account: **{account_name}**")
+default_idx = tags.index("PILOT STORES") if "PILOT STORES" in tags else 0
+tag = st.sidebar.selectbox("Tag", options=tags, index=default_idx)
+
 # Main
 st.title("Rollout Dashboard")
 st.caption("Qualifying orders and subscription status by location and channel.")
 
 try:
-    account = get_account(account_id)
-    account_name = account.get("name", account_id)
-    st.sidebar.success(f"Account: **{account_name}**")
-
-    all_locations = get_all_locations(account_id)
-    all_channel_links = get_all_channel_links(account_id)
-    grouped = group_all_locations_by_tags(all_locations, all_channel_links)
-    tags = sorted(grouped.keys())
-    default_idx = tags.index("PILOT STORES") if "PILOT STORES" in tags else 0
-    tag = st.sidebar.selectbox("Tag", options=tags, index=default_idx)
-
     cl_by_id = {cl["_id"]: cl for cl in all_channel_links}
     if st.sidebar.button("Load dashboard data"):
         with st.spinner("Loading orders per channel..."):
@@ -230,16 +257,6 @@ try:
                     short_labels[f"{ch_type} total orders"], format="%d"
                 )
             st.dataframe(style, use_container_width=True, hide_index=True, column_config=column_config)
-
-            # Expandable per location: channel detail
-            st.subheader("Channel detail by location")
-            for loc_name in df["Location"].unique():
-                loc_df = df[df["Location"] == loc_name]
-                loc_status = loc_df["Location status"].iloc[0]
-                loc_sub = loc_df["Location subscribed"].iloc[0]
-                with st.expander(f"{loc_name} · {loc_status} · Subscribed: {loc_sub}"):
-                    show = loc_df[["Channel", "Channel ID", "Orders (period)", "Has qualifying order", "Channel status", "Channel subscribed"]]
-                    st.dataframe(show, use_container_width=True, hide_index=True)
 
     # Show stored data and "Set all green as SUBSCRIBED" button when we have loaded data
     if "rollout_df" in st.session_state:
