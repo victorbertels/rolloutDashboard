@@ -41,9 +41,11 @@ def channel_link_to_type(channel_link: dict) -> Optional[str]:
     key = int(ch) if isinstance(ch, str) and ch.isdigit() else ch
     return CHANNEL_FIELD_TO_TYPE.get(key)
 
-# Date range: end = now, start = N days ago
+# Date range: end = end of today UTC (stable so reloads give same result), start = midnight N days ago
 def make_date_range(days_back: int):
-    end_dt = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    # End of today UTC so multiple loads on the same day use the same window (no sliding "now")
+    end_dt = now.replace(hour=23, minute=59, second=59, microsecond=999000)
     end_date = end_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{end_dt.microsecond // 1000:03d}Z"
     start_dt = (end_dt - timedelta(days=days_back)).replace(hour=0, minute=0, second=0, microsecond=0)
     start_date = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -67,13 +69,14 @@ def build_location_channel_data(account_id: str, tag: str, start_date: str, end_
             orders_resp = get_orders_per_channel_link(cl_id, account_id, start_date, end_date)
             orders = orders_resp.get("_items", [])
             order_count = len(orders)
-            has_qualifying = False
+            # Loop over ALL orders: a qualifying order has both unavailableActions and posReceiptId
             qualifying_order_id = None
             for order in orders:
                 if order_has_unavailable_actions(order) and order_has_pos_receipt_id(order):
-                    has_qualifying = True
-                    qualifying_order_id = order.get("_id")
-                    break
+                    if qualifying_order_id is None:
+                        qualifying_order_id = order.get("_id")  # use first (newest, if API sorted) for link
+                    # don't break: we keep scanning so the result doesn't depend on order of iteration
+            has_qualifying = qualifying_order_id is not None
             channel_type = channel_link_to_type(cl) or cl_name  # fallback to name if channel not in map
             rows.append({
                 "Location": loc_name,
@@ -127,6 +130,7 @@ try:
         else:
             df = pd.DataFrame(rows)
             st.session_state["rollout_df"] = df
+            st.session_state["rollout_date_range"] = (start_date, end_date)  # fix range for this load
             st.subheader(f"Locations · {tag}")
 
             # Rollout % and total perfect orders (computed after we have loc_channel_df)

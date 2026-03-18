@@ -84,7 +84,7 @@ def get_all_location_tags(all_locations: list) -> set:
 
 def group_all_locations_by_tags(all_locations: list, all_channel_links: list) -> dict:
     """Returns { TAG: [locations with that tag], ... }. Each location's channelLinks list has channel==1 IDs removed."""
-    channel_1_ids = {cl["_id"] for cl in all_channel_links if cl.get("channel") == 1}
+    channel_1_ids = {cl["_id"] for cl in all_channel_links if int(cl.get("channel", 0)) == 1}
     grouped = {}
     for tag in get_all_location_tags(all_locations):
         grouped[tag] = [
@@ -106,6 +106,7 @@ def get_all_locations(account_id: str, on_progress=None) -> list:
                 "where": json.dumps({"account": account_id}),
                 "max_results": max_results,
                 "page": page,
+                "sort": "_id",
                 "projection": json.dumps({"channelLinks": 1 , "name" : 1,"tags": 1 , "account": 1 , "status": 1 })
             },
             headers=get_headers(),
@@ -114,7 +115,8 @@ def get_all_locations(account_id: str, on_progress=None) -> list:
         data = r.json()
         items = data.get("_items", [])
         all_locs.extend(items)
-        total = data.get("_meta", {}).get("total", 0)
+        if total is None:
+            total = data.get("_meta", {}).get("total", 0)
         if on_progress:
             on_progress(len(all_locs), total)
         if len(all_locs) >= total or len(items) < max_results:
@@ -134,6 +136,7 @@ def get_all_channel_links(account_id: str, on_progress=None) -> list:
                 "where": json.dumps({"account": account_id}),
                 "max_results": max_results,
                 "page": page,
+                "sort": "_id",
                 "projection": json.dumps({"channel": 1 , "account": 1 , "status": 1 , "location": 1 })
             },
             headers=get_headers(),
@@ -142,7 +145,8 @@ def get_all_channel_links(account_id: str, on_progress=None) -> list:
         data = r.json()
         items = data.get("_items", [])
         all_channel_links.extend(items)
-        total = data.get("_meta", {}).get("total", 0)
+        if total is None:
+            total = data.get("_meta", {}).get("total", 0)
         if on_progress:
             on_progress(len(all_channel_links), total)
         if len(all_channel_links) >= total or len(items) < max_results:
@@ -169,14 +173,39 @@ def update_channel_link_status(channel_link_id: str, _etag: str, status: int) ->
     return r.json()
 
 
-def get_orders_per_channel_link(channelLink_id: str , account_id: str, start_date: str, end_date: str):
-    r = requests.get(f"{BASE_URL}/orders", headers=get_headers(), 
-    # params={"where": json.dumps({"channelLink": channelLink_id, "account": account_id, "createdAt": {"$gte": start_date, "$lte": end_date}}),
-    # "projection": json.dumps({"channelLink": 1 , "account": 1 , "createdAt": 1 , "status": 1 , "items": 1 , "total": 1 })})
-    params={"where": json.dumps({"channelLink": channelLink_id, "account": account_id, "_created": {"$gte": start_date, "$lte": end_date}})}
-    )
-    r.raise_for_status()
-    return r.json()
+def get_orders_per_channel_link(channelLink_id: str, account_id: str, start_date: str, end_date: str):
+    """Fetch all orders for a channel link in the date range. Page-based pagination with dedup by _id."""
+    seen_ids: set = set()
+    all_orders = []
+    page = 1
+    max_results = 500
+    total = None
+    while True:
+        params = {
+            "where": json.dumps({
+                "channelLink": channelLink_id,
+                "account": account_id,
+                "_created": {"$gte": start_date, "$lte": end_date},
+            }),
+            "max_results": max_results,
+            "page": page,
+            "sort": "_id",
+        }
+        r = requests.get(f"{BASE_URL}/orders", headers=get_headers(), params=params)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("_items", [])
+        if total is None:
+            total = data.get("_meta", {}).get("total", 0)
+        for order in items:
+            oid = order.get("_id")
+            if oid not in seen_ids:
+                seen_ids.add(oid)
+                all_orders.append(order)
+        if len(all_orders) >= total or len(items) < max_results:
+            break
+        page += 1
+    return {"_items": all_orders, "_meta": {"total": len(all_orders)}}
 
 def order_has_amends(order: dict) -> bool:
     for item in order.get("items", []):
