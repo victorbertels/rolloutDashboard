@@ -10,6 +10,7 @@ st.set_page_config(page_title="Rollout Dashboard", layout="wide")
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from utils import (
     get_account,
@@ -55,33 +56,46 @@ def build_location_channel_data(account_id: str, tag: str, start_date: str, end_
     """For a tag, return list of dicts: location_name, location_status, channel_name, order_count, has_qualifying_order, channel_status.
     Only non-subscribed locations are included; we only fetch orders for those."""
     locations = grouped.get(tag, [])
+
+    # Collect all channel link IDs we need to fetch orders for
+    non_sub_locs = [loc for loc in locations if not is_location_subscribed(loc)]
+    all_cl_ids = set()
+    for loc in non_sub_locs:
+        all_cl_ids.update(loc.get("channelLinks", []))
+
+    # Prefetch all orders in parallel (5 concurrent requests — light on CPU, fast on I/O)
+    orders_cache = {}
+    def fetch_orders(cl_id):
+        return cl_id, get_orders_per_channel_link(cl_id, account_id, start_date, end_date)
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(fetch_orders, cl_id): cl_id for cl_id in all_cl_ids}
+        for future in as_completed(futures):
+            cl_id, orders_resp = future.result()
+            orders_cache[cl_id] = orders_resp
+
+    # Build rows using cached results
     rows = []
-    for loc in locations:
-        if is_location_subscribed(loc):
-            continue
+    for loc in non_sub_locs:
         loc_name = loc.get("name", loc.get("_id", ""))
         loc_status = loc.get("status", "")
-        loc_subscribed = False  # we only process non-subscribed locations
         for cl_id in loc.get("channelLinks", []):
             cl = cl_by_id.get(cl_id, {})
             cl_name = cl.get("name", cl_id)
             cl_status = cl.get("status", "")
-            orders_resp = get_orders_per_channel_link(cl_id, account_id, start_date, end_date)
-            orders = orders_resp.get("_items", [])
+            orders = orders_cache.get(cl_id, {}).get("_items", [])
             order_count = len(orders)
-            # Loop over ALL orders: a qualifying order has both unavailableActions and posReceiptId
             qualifying_order_id = None
             for order in orders:
                 if order_has_unavailable_actions(order) and order_has_pos_receipt_id(order):
                     if qualifying_order_id is None:
-                        qualifying_order_id = order.get("_id")  # use first (newest, if API sorted) for link
-                    # don't break: we keep scanning so the result doesn't depend on order of iteration
+                        qualifying_order_id = order.get("_id")
             has_qualifying = qualifying_order_id is not None
-            channel_type = channel_link_to_type(cl) or cl_name  # fallback to name if channel not in map
+            channel_type = channel_link_to_type(cl) or cl_name
             rows.append({
                 "Location": loc_name,
                 "Location status": loc_status,
-                "Location subscribed": "Yes" if loc_subscribed else "No",
+                "Location subscribed": "No",
                 "Channel": cl_name,
                 "Channel type": channel_type,
                 "Channel ID": cl_id,
